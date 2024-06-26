@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DETECTOR BIỂN SỐ XE</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <style>
+        .video-container {
+            border: 2px solid;
+            position: relative;
+            width: 100%;
+            height: 300px;
+            overflow: hidden;
+        }
+        .video-container video, .video-container canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        #processButton {
+            width: 100%;
+        }
+        .drag-drop-area {
+            border: 2px solid;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .drag-drop-area:hover {
+            background-color: #f0f0f0;
+        }
+        .drag-drop-area input[type="file"] {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <div class="video-container drag-drop-area" id="dragDropArea">
+                    <p style="margin-top: 50px;">Drop Video Here <br> or <br> Click To Upload</p>
+                    <video id="inputVideo" controls muted playsinline style="display: none;">
+                        Trình duyệt của bạn không hỗ trợ thẻ video.
+                    </video>
+                </div>
+                <input type="file" id="videoInput" accept="video/*">
+            </div>
+
+            <div class="col-md-6 mb-3">
+                <div class="video-container">
+                    <p style="margin-top: 50px; text-align: center; padding: 20px;">Kết quả</p>
+                    <canvas id="processedFrameCanvas" style="display: none;"></canvas>
+                </div>
+            </div>
+
+            <div class="col-md-12 mb-3">
+                <button id="connectCam" type="button" class="btn btn-outline-primary">Kết nối webcam</button>
+                <button id="startProcessingButtonWebcam" type="button" class="btn btn-outline-success" style="display: none;">Start Processing Webcam</button>
+                <button id="startProcessingButtonVideo" type="button" class="btn btn-outline-success" style="display: none;">Start Processing Video</button>
+                <button id="stopProcessingButton" type="button" class="btn btn-outline-danger" style="display: none;">Stop Processing</button>
+            </div>
+        </div>
+    </div>
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const apiUrl = "http://192.168.10.13:6066"; // Sử dụng HTTP
+            const apiToken = "Basic " + btoa("admin:123");
+
+            const videoInput = document.getElementById("videoInput");
+            const videoElement = document.getElementById("inputVideo");
+            const startProcessingButtonWebcam = document.getElementById("startProcessingButtonWebcam");
+            const startProcessingButtonVideo = document.getElementById("startProcessingButtonVideo");
+            const stopProcessingButton = document.getElementById("stopProcessingButton");
+            const processedFrameCanvas = document.getElementById("processedFrameCanvas");
+            const dragDropArea = document.getElementById("dragDropArea");
+            const connectCameraButton = document.getElementById("connectCam");
+
+            let file;
+            let processingInterval;
+            let isWebcamActive = false;
+            let worker = new Worker(getWorkerBlobUrl());
+
+            let frameQueue = []; // chờ xử lý
+            let resultQueue = []; // server trả
+
+            worker.onmessage = function(event) {
+                const data = event.data;
+                if (data.imageData) {
+                    resultQueue.push(data);
+                }
+            };
+
+            //kéo thả tệp vào vùng xử lý video
+            dragDropArea.addEventListener("click", () => videoInput.click());
+
+            dragDropArea.addEventListener("dragover", (event) => {
+                event.preventDefault();
+                dragDropArea.classList.add("drag-over");
+            });
+
+            dragDropArea.addEventListener("dragleave", () => {
+                dragDropArea.classList.remove("drag-over");
+            });
+
+            dragDropArea.addEventListener("drop", (event) => {
+                event.preventDefault();
+                dragDropArea.classList.remove("drag-over");
+                file = event.dataTransfer.files[0];
+                handleFile(file);
+                toggleButtonsForVideo();
+            });
+            //load video
+            videoInput.addEventListener("change", (event) => {
+                file = event.target.files[0];
+                handleFile(file);
+                toggleButtonsForVideo();
+            });
+
+            startProcessingButtonWebcam.addEventListener("click", () => {
+                if (!videoElement.srcObject) {
+                    alert("Vui lòng kết nối webcam trước khi bắt đầu xử lý.");
+                    return;
+                }
+                startProcessingButtonWebcam.style.display = 'none';
+                stopProcessingButton.style.display = 'inline-block';
+
+                startWebcamProcessing();
+            });
+
+            startProcessingButtonVideo.addEventListener("click", () => {
+                if (!file) {
+                    alert("Vui lòng tải lên video trước khi bắt đầu xử lý.");
+                    return;
+                }
+                videoElement.play(); // Bắt đầu chạy video khi nhấn nút
+                startProcessingButtonVideo.style.display = 'none';
+                stopProcessingButton.style.display = 'inline-block';
+
+                startVideoProcessing();
+            });
+
+            stopProcessingButton.addEventListener("click", () => {
+                clearInterval(processingInterval);
+                startProcessingButtonWebcam.style.display = isWebcamActive ? 'inline-block' : 'none';
+                startProcessingButtonVideo.style.display = !isWebcamActive ? 'inline-block' : 'none';
+                stopProcessingButton.style.display = 'none';
+                if (!isWebcamActive && videoElement) {
+                    videoElement.pause(); // Dừng video khi nhấn nút
+                }
+            });
+
+            connectCameraButton.addEventListener("click", () => {
+                navigator.mediaDevices.getUserMedia({ video: true })
+                    .then(stream => {
+                        videoElement.srcObject = stream;
+                        videoElement.style.display = "block";
+
+                        isWebcamActive = true;
+                        connectCameraButton.style.display = 'none';
+                        toggleButtonsForWebcam();
+                    })
+                    .catch(error => {
+                        console.error('Lỗi khi kết nối với camera:', error);
+                        alert("Không thể kết nối với camera.");
+                    });
+            });
+
+            function handleFile(file) {
+                if (file) {
+                    if (videoElement.srcObject) {
+                        const stream = videoElement.srcObject;
+                        const tracks = stream.getTracks();
+                        tracks.forEach(track => track.stop());
+                        videoElement.srcObject = null;
+                        isWebcamActive = false;
+                        connectCameraButton.style.display = 'inline-block';
+                    }
+                    const fileURL = URL.createObjectURL(file);
+                    videoElement.src = fileURL;
+                    videoElement.style.display = "block";
+                }
+            }
+
+            function startVideoProcessing() {
+                processingInterval = setInterval(() => {
+                    captureFrameAndSendToServer();
+                }, 200); // Chụp và gửi một khung hình mỗi 200 mili giây
+                processResultQueue();
+            }
+
+            function startWebcamProcessing() {
+                processingInterval = setInterval(() => {
+                    captureFrameAndSendToServer();
+                }, 200); // Chụp và gửi một khung hình mỗi 200 mili giây
+                processResultQueue();
+            }
+
+            function captureFrameAndSendToServer() {
+                const canvas = document.createElement('canvas');
+                canvas.width = videoElement.videoWidth;
+                canvas.height = videoElement.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                frameQueue.push(imageData);
+                worker.postMessage({ imageData, apiUrl, apiToken });
+            }
+
+            function drawBoundingBoxes(imageData, data) {
+                const ctx = processedFrameCanvas.getContext('2d');
+                processedFrameCanvas.width = videoElement.videoWidth;
+                processedFrameCanvas.height = videoElement.videoHeight;
+
+                // Vẽ lại khung hình đã chụp (đảm bảo canvas không trống khi vẽ bounding boxes)
+                ctx.putImageData(imageData, 0, 0);
+
+                data.forEach(obj => {
+                    const { label, bounding_box, chars } = obj;
+                    const { x1, y1, x2, y2 } = bounding_box;
+
+                    // Vẽ ký tự
+                    ctx.fillStyle = '#ead529';
+                    ctx.font = '40px Arial Bolder';
+                    const textX = (x1 + x2) / 2 - ctx.measureText(chars.join('')).width / 2;
+                    const textY = y1 - 10;
+                    ctx.fillText(chars.join(' '), textX, textY); // Hiển thị chars
+
+                    // Vẽ bounding box cho biển số xe
+                    ctx.strokeStyle = '#00FF00';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+                });
+
+                processedFrameCanvas.style.display = 'block';
+            }
+
+            function processResultQueue() {
+                const frameDePlay = 1;
+                setInterval(() => {
+                    if (resultQueue.length > 0) {
+                        const result = resultQueue.shift();
+                        drawBoundingBoxes(result.imageData, result.data);
+                    }
+                }, 200); // Xử lý khung hình kết quả mỗi 200 mili giây
+            }
+
+            function toggleButtonsForVideo() {
+                startProcessingButtonVideo.style.display = 'inline-block';
+                startProcessingButtonWebcam.style.display = 'none';
+            }
+
+            function toggleButtonsForWebcam() {
+                startProcessingButtonWebcam.style.display = 'inline-block';
+                startProcessingButtonVideo.style.display = 'none';
+            }
+
+            function getWorkerBlobUrl() {
+                const workerScript = `
+                    self.onmessage = function(event) {
+                        const { imageData, apiUrl, apiToken } = event.data;
+
+                        const canvas = new OffscreenCanvas(imageData.width, imageData.height);
+                        const ctx = canvas.getContext('2d');
+                        ctx.putImageData(imageData, 0, 0);
+
+                        canvas.convertToBlob({ type: 'image/jpeg' }).then(blob => {
+                            const formData = new FormData();
+                            formData.append('frame', blob, 'frame.jpg');
+
+                            fetch(apiUrl + '/process_frame', {
+                                method: 'POST',
+                                headers: {
+                                    'Authorization': apiToken
+                                },
+                                body: formData
+                            })
+                            .then(response => response.json())
+                            .then(data => {
+                                self.postMessage({ imageData, data });
+                            })
+                            .catch(error => {
+                                console.error('Lỗi khi gửi yêu cầu:', error.message);
+                            });
+                        });
+                    };
+                `;
+
+                const blob = new Blob([workerScript], { type: 'application/javascript' });
+                return URL.createObjectURL(blob);
+            }
+        });
+    </script>
+</body>
+</html>
